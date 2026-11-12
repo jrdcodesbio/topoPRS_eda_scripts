@@ -75,7 +75,7 @@ Loop tables have 33 columns; domain tables have 16. No exact duplicate pairs; al
 
 ## GWAS clumping pipeline (implemented; synthetic tests only)
 
-LD-clumps genome-wide-significant variants into loci for the Hi-C annotation step. The 5 unit tests in `tests/test_clump_pipeline.py` pass on synthetic data (`python -m unittest tests/test_clump_pipeline.py`). **It has not yet been run on the HPC data.**
+LD-clumps genome-wide-significant variants into loci for the Hi-C annotation step. The 5 unit tests in `tests/test_clump_pipeline.py` pass on synthetic data (`python -m unittest tests/test_clump_pipeline.py`). **HPC status:** step 1 (`inspect_gwas.py`) ran on the real GWAS (10,767,487 rows; 3,553 with p<5e-8, 3,978 with p<1e-6, 4,819 with p<1e-5; no p=0). Steps 2-5 have not completed yet: the LD reference build is pending (see below).
 
 | Step | Script | What it does |
 |---|---|---|

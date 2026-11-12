@@ -55,7 +55,11 @@ step "2/5 LD reference"
 if [[ -s $REF.pgen && $REBUILD_LDREF != 1 ]]; then
     echo "using existing $REF.pgen (set REBUILD_LDREF=1 to rebuild)"
 else
-    if ! curl -sSf --max-time 20 -o /dev/null https://www.cog-genomics.org/plink/2.0/resources; then
+    # Probe the host the downloads actually come from. Any HTTP status (even 403/404) means
+    # it is reachable; only "000" (no response) means no connectivity.
+    code=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' https://www.dropbox.com/ || true)
+    echo "connectivity probe https://www.dropbox.com/ -> HTTP $code"
+    if [[ $code == 000 ]]; then
         echo "No internet from $(hostname). Build the reference on a login/transfer node first:" >&2
         echo "  bash $SCRIPTS/build_ldref.sh $TOPO $PLINK2 4" >&2
         exit 1
