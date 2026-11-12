@@ -24,6 +24,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 from gwas_common import allele_pair_key, normalize_chrom, read_pvar_header  # noqa: E402
+from prep_clump_input import check_clump_ids  # noqa: E402
 from summarize_clumps import parse_sp2  # noqa: E402
 
 PLINK2 = shutil.which("plink2")
@@ -54,6 +55,20 @@ class HelperTests(unittest.TestCase):
             cols, skip = read_pvar_header(p)
             self.assertEqual(cols, ["CHROM", "POS", "ID", "REF", "ALT"])
             self.assertEqual(skip, 3)
+
+    def test_check_clump_ids_rejects_blank_and_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            pvar = d / "x.pvar"
+            header = "#CHROM\tPOS\tID\tREF\tALT\n"
+            body = "1\t10\tv1\tA\tG\n1\t20\tv2\tA\tG\n2\t30\tv2\tC\tT\n1\t40\t.\tA\tG\n"
+            pvar.write_text(header + body)
+            check_clump_ids(pvar, pd.Series(["v1"]), 100, d)  # unique ID passes
+            with self.assertRaises(SystemExit):
+                check_clump_ids(pvar, pd.Series(["v1", "v2"]), 100, d)
+            self.assertIn("v2", (d / "duplicate_ref_ids.tsv").read_text())
+            with self.assertRaises(SystemExit):
+                check_clump_ids(pvar, pd.Series(["."]), 100, d)
 
 
 def write_phased_vcf(path: Path, n_samples: int = 200, seed: int = 1) -> None:

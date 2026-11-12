@@ -40,9 +40,8 @@ Project root:
 Created by the clumping pipeline (not present before the first run):
 
 ```text
-├── refData/1000G_hg38_EUR/         # EUR LD reference (pgen/pvar/psam, raw/ downloads)
 ├── results/clump/<tag>/            # clump input, plink2 output, loci tables
-├── QC_OUT/                         # gwas_schema/, ldref/, clump/<tag>/
+├── QC_OUT/                         # gwas_schema/, clump/<tag>/ (incl. ref_provenance/)
 └── slurmLogs/                      # must exist before sbatch (Slurm opens logs first)
 ```
 
@@ -75,15 +74,16 @@ Loop tables have 33 columns; domain tables have 16. No exact duplicate pairs; al
 
 ## GWAS clumping pipeline (implemented; synthetic tests only)
 
-LD-clumps genome-wide-significant variants into loci for the Hi-C annotation step. The 5 unit tests in `tests/test_clump_pipeline.py` pass on synthetic data (`python -m unittest tests/test_clump_pipeline.py`). **HPC status:** step 1 (`inspect_gwas.py`) ran on the real GWAS (10,767,487 rows; 3,553 with p<5e-8, 3,978 with p<1e-6, 4,819 with p<1e-5; no p=0). Steps 2-5 have not completed yet: the LD reference build is pending (see below).
+LD-clumps genome-wide-significant variants into loci for the Hi-C annotation step. The 6 unit tests in `tests/test_clump_pipeline.py` pass on synthetic data (`python -m unittest tests/test_clump_pipeline.py`). **HPC status:** step 1 (`inspect_gwas.py`) ran on the real GWAS (10,767,487 rows; 3,553 with p<5e-8, 3,978 with p<1e-6, 4,819 with p<1e-5; no p=0). The clump steps have not yet been run with the MBB reference.
 
 | Step | Script | What it does |
 |---|---|---|
 | 1 | `inspect_gwas.py` | Chunked schema/missing-value/P-value QC of the GWAS; changes nothing. |
-| 2 | `build_ldref.sh` | Builds the EUR LD reference from the 1000G hg38 panel (Byrska-Bishop et al. 2022; plink2 resources release 2022-08-04, b38b). Needs internet (~3.7 GiB); if compute nodes are offline, run it once on a login/transfer node: `bash scripts/build_ldref.sh <TOPO> <PLINK2> 4`. Skipped when `refData/.../EUR_hg38.pgen` exists unless `REBUILD_LDREF=1`. |
-| 3 | `prep_clump_input.py` | Matches significant GWAS variants to the reference `.pvar` on chromosome, position and unordered allele pair; writes the clump input using reference IDs. Unmatched and incomplete rows are listed in QC, not dropped silently. |
-| 4 | `run_clump.sh` | plink2 `--clump` (phased r², reference IDs, `P` column). |
-| 5 | `summarize_clumps.py` | Writes `loci.tsv` (one row per clump) and `locus_members.tsv` (one row per locus/variant, original GWAS columns joined); flags unmatched significant SNPs lying within `KB` of a locus. |
+| 2 | `prep_clump_input.py` | Matches significant GWAS variants to the reference `.pvar` on chromosome, position and unordered allele pair; writes the clump input using reference IDs. Unmatched and incomplete rows are listed in QC, not dropped silently. Stops if a matched reference ID is `.`/empty or occurs more than once in the pvar (`duplicate_ref_ids.tsv`), and warns if under 50% of significant variants match (check genome build/coverage). |
+| 3 | `run_clump.sh` | plink2 `--clump` (reference IDs, `P` column). Uses **unphased** r² (`--clump-unphased`) by default because the phase status of the reference is not established; `UNPHASED=0` restores plink2's phased default. |
+| 4 | `summarize_clumps.py` | Writes `loci.tsv` (one row per clump) and `locus_members.tsv` (one row per locus/variant, original GWAS columns joined); flags unmatched significant SNPs lying within `KB` of a locus. |
+
+**LD reference:** `MBB_CTD_PRS_GWAS/Extracted_PRS_MBB_gwide.{pgen,pvar,psam}` under `/fslustre/labs/ext_rosen_joseph_mayo_edu/` (per the user: European, hg38, relatives already removed with a plink KING matrix; not re-verified here). Nothing is built or downloaded; override the location with `REF=<pfile prefix>`. Each run copies the reference's sample/variant counts, `.psam` head, pvar header/first records and `.log` to `QC_OUT/clump/<tag>/ref_provenance/`.
 
 `gwas_common.py` holds shared readers (all fields read as strings; explicit missing tokens). Dependencies: `requirements.txt` (pandas, numpy) plus plink2.
 
@@ -92,11 +92,12 @@ Run (from the topoEDA root):
 ```bash
 mkdir -p slurmLogs && sbatch scripts/run_clump_pipeline.sbatch
 sbatch --export=ALL,R2=0.01,KB=1000 scripts/run_clump_pipeline.sbatch   # override thresholds
+sbatch --export=ALL,UNPHASED=0 scripts/run_clump_pipeline.sbatch        # phased r2 instead
 ```
 
-Defaults: `P1=P2=5e-8`, `R2=0.1`, `KB=250`. Each parameter set writes to `results/clump/p1_<P1>_p2_<P2>_r2_<R2>_kb_<KB>/`, with QC in `QC_OUT/`.
+Defaults: `P1=P2=5e-8`, `R2=0.1`, `KB=250`, `UNPHASED=1`. Each parameter set writes to `results/clump/p1_<P1>_p2_<P2>_r2_<R2>_kb_<KB>/`, with QC in `QC_OUT/`.
 
-Caveats: loci from clumping are LD-based on a 1000G EUR reference, so they are only as good as that ancestry match with the GWAS cohort (not verified). Significant variants absent from the reference cannot be clumped; check `unmatched_sig_snps.tsv` and `unmatched_near_loci.tsv`.
+Caveats: loci are LD-based on the MBB samples, so they depend on how well that cohort's LD matches the GWAS population (both European per the user; not verified here). The reference may be a variant subset ('Extracted'); significant variants absent from it cannot be clumped, so check `unmatched_sig_snps.tsv`, `unmatched_near_loci.tsv` and `frac_sig_matched` in `prep_summary.json`. Whether `--clump-unphased` is accepted by the HPC plink2 build (2023-11-23) is checked at run time against its saved `--help clump`.
 
 ## Next implementation priorities
 
