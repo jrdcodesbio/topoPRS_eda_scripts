@@ -41,7 +41,8 @@ Created by the clumping pipeline (not present before the first run):
 
 ```text
 ├── results/clump/<tag>/            # clump input, plink2 output, loci tables
-├── QC_OUT/                         # gwas_schema/, clump/<tag>/ (incl. ref_provenance/)
+├── results/annotate/<tag>/         # Hi-C annotation of the loci
+├── QC_OUT/                         # gwas_schema/, clump/<tag>/ (incl. ref_provenance/), annotate/<tag>/
 └── slurmLogs/                      # must exist before sbatch (Slurm opens logs first)
 ```
 
@@ -72,9 +73,9 @@ First six columns: `chr1 x1 x2 chr2 y1 y2`. BEDPE coordinates are zero-based, ha
 
 Loop tables have 33 columns; domain tables have 16. No exact duplicate pairs; all listed contacts are cis, and all domains are diagonal. No additional significance filter was applied. Neither matrices nor bigWigs have been inspected. Zero trans calls in BEDPE does not establish absence of trans contacts in `.hic`.
 
-## GWAS clumping pipeline (implemented; synthetic tests only)
+## GWAS clumping pipeline (implemented; run on HPC)
 
-LD-clumps genome-wide-significant variants into loci for the Hi-C annotation step. The 6 unit tests in `tests/test_clump_pipeline.py` pass on synthetic data (`python -m unittest tests/test_clump_pipeline.py`). **HPC status:** step 1 (`inspect_gwas.py`) ran on the real GWAS (10,767,487 rows; 3,553 with p<5e-8, 3,978 with p<1e-6, 4,819 with p<1e-5; no p=0). The clump steps have not yet been run with the MBB reference.
+LD-clumps genome-wide-significant variants into loci for the Hi-C annotation step. The 6 unit tests in `tests/test_clump_pipeline.py` pass on synthetic data (`python -m unittest tests/test_clump_pipeline.py`). **HPC status:** step 1 (`inspect_gwas.py`) ran on the real GWAS (10,767,487 rows; 3,553 with p<5e-8, 3,978 with p<1e-6, 4,819 with p<1e-5; no p=0). Clumping with the MBB reference has run on the HPC and gave 37 independent loci (default parameters, per the user).
 
 | Step | Script | What it does |
 |---|---|---|
@@ -99,10 +100,54 @@ Defaults: `P1=P2=5e-8`, `R2=0.1`, `KB=250`, `UNPHASED=1`. Each parameter set wri
 
 Caveats: loci are LD-based on the MBB samples, so they depend on how well that cohort's LD matches the GWAS population (both European per the user; not verified here). The reference may be a variant subset ('Extracted'); significant variants absent from it cannot be clumped, so check `unmatched_sig_snps.tsv`, `unmatched_near_loci.tsv` and `frac_sig_matched` in `prep_summary.json`. Whether `--clump-unphased` is accepted by the HPC plink2 build (2023-11-23) is checked at run time against its saved `--help clump`.
 
+## Locus annotation against Hi-C (implemented; synthetic tests only)
+
+`annotate_loci.py` (run by `run_annotate.sbatch` after clumping) annotates the lead and every clump member of each locus against each reference (`lung`, `Tcell` in `sourceData/genFiles/`). Each file answers a different question:
+
+| File | Extracted per variant/locus | Interpretation |
+|---|---|---|
+| `loops.bedpe.gz` | Overlap with either anchor; the partner anchor; merged unique partner regions; the loop's `observed`/`expected*`/`fdr*` columns (selected from the actual header by `--loop-stat-regex`) | Whether the locus sits on an endpoint of a focally enriched contact and where that contact leads. FDR describes the loop *call*, not enrichment of IPF variants. |
+| `contactDom.bedpe.gz` | All containing domains (nested allowed), the smallest domain span, the distance to the nearest domain boundary | The locus's self-interacting neighbourhood. Domains are diagonal intervals, not loop edges. |
+| `compartments.bigWig` | Score, bin, sign and `compartment_label` at each variant | Broad contact environment. A-like regions generally associate with active chromatin, but this is not an expression measurement. |
+
+Compartment labels: ENCODE compartment tracks are oriented so that positive = A. This is per the user; the ENCODE hic-pipeline reference docs reviewed (2026-11-13) do not state the sign convention.
+
+| Compartment score | `compartment_label` |
+|---|---|
+| > 0 | `A` |
+| < 0 | `B` |
+| exactly 0 | `unassigned` |
+| no coverage / NaN | missing (empty) |
+
+Loop relations are kept distinct:
+- `anchor`: the variant overlaps an anchor.
+- `near`: no overlap, but within `NEAR_KB` (default 10 kb) of an anchor.
+- spanning: strictly between the two anchors of a cis loop. This is only counted (`n_spanning_loops`) and never treated as contact.
+
+`both_anchors_in_locus` flags loops whose two ends both fall inside one locus. Their "partner" is internal, not a distal target.
+
+Conventions: variant `POS` is 1-based, so it is tested as the 0-based base `POS-1` against half-open BEDPE intervals. Chromosome names are normalized on both sides; the bigWig naming style is detected from the file.
+
+Outputs in `results/annotate/<tag>/`:
+- `variant_annotations.tsv`: one row per variant × reference.
+- `locus_loops.tsv`: one row per locus × reference × loop, with the original loop statistics unchanged.
+- `locus_domains.tsv`
+- `loci_annotated.tsv`: one row per locus × reference rollup.
+
+QC is written to `QC_OUT/annotate/<tag>/annotate_summary.json`. It contains the header columns, the selected loop statistics, juicer comment lines, non-cis/non-diagonal counts, observed bigWig bin widths, variants without a compartment score, and chromosomes absent from a file. **Check it before interpreting the results.**
+
+```bash
+pip install --user pyBigWig                     # once, in the python/3.10.11 module env
+sbatch scripts/run_annotate.sbatch              # TAG defaults to the default clump tag
+sbatch --export=ALL,TAG=<clump tag>,NEAR_KB=25 scripts/run_annotate.sbatch
+```
+
+Caveats: the reference maps are not IPF case/control contrasts, and a missing loop call is not proof of absent contact. Promoter/gene mapping still needs a compatible annotation.
+
 ## Next implementation priorities
 
 1. ~~Inspect and harmonize the GWAS schema~~ Implemented (`inspect_gwas.py`, configurable thresholds, original statistics retained); pending a run on HPC data. Loci tables are now available as input to step 2.
-2. Join variants to loop anchors on either endpoint, domains, and compartment scores. Distinguish anchor overlap from being between anchors or merely nearby. Add promoter/gene mapping only after obtaining a compatible annotation.
+2. ~~Join variants to loop anchors on either endpoint, domains, and compartment scores~~ Implemented (`annotate_loci.py`; anchor vs near vs spanning kept distinct); pending an HPC run. Still open: promoter/gene mapping, which needs a compatible hg38 annotation.
 3. Produce interpretable tables/plots of locus connectivity and reference-specific/shared annotations. Distinguish direct edges, shared partners, and connected components; significant SNPs in LD are not independent loci.
 4. Inspect selected GWAS regions in both matrices at common coordinates/resolutions. Explore trans contacts separately from the cis loop list. Missing loop calls are not proof of absent contact.
 

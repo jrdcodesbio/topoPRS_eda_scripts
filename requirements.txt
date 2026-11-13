@@ -1,3 +1,4 @@
 # Python >= 3.8. External binary: plink2 (HPC: /usr/local/biotools/plink2/v2.00a6LM.2023.1123/plink2)
 pandas>=1.5
 numpy>=1.21
+pyBigWig
